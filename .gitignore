@@ -1,0 +1,53 @@
+# =====================================
+# 🐍 DJANGO + REACT + MYSQL PROJECT
+# =====================================
+
+# --- Environnement virtuel ---
+venv/
+env/
+ENV/
+.venv/
+
+# --- Fichiers d’environnement ---
+.env
+*.env
+
+# --- Fichiers Python compilés ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# --- Django ---
+db.sqlite3
+*.log
+*.pot
+*.pyc
+*.mo
+
+# --- Dossier des migrations inutiles (garde seulement __init__.py) ---
+*/migrations/__pycache__/
+*/migrations/*.pyc
+
+# --- Fichiers média et uploads ---
+backend/photos/
+backend/media/
+media/
+photos/
+
+# --- Fichiers de configuration locaux ---
+*.local
+*.bak
+*.swp
+*.swo
+
+# --- Node / React ---
+node_modules/
+build/
+dist/
+*.lock
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock
