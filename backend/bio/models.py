@@ -131,3 +131,22 @@ def create_fiches(sender, instance, created, **kwargs):
     if created:
         FicheAnthropometrique.objects.create(personne=instance)
         FicheDactyloscopique.objects.create(personne=instance)
+
+
+class Activite(models.Model):
+    ACTIONS = [
+        ('connexion', 'Connexion'),
+        ('ajout_fiche', 'Ajout de fiche'),
+        ('suppression_fiche', 'Suppression de fiche'),
+    ]
+
+    utilisateur = models.ForeignKey(Utilisateur, on_delete=models.CASCADE)
+    action = models.CharField(max_length=50, choices=ACTIONS)
+    description = models.TextField(blank=True)
+    date_heure = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-date_heure']
+
+    def __str__(self):
+        return f"{self.utilisateur.username} - {self.action}"

@@ -1,6 +1,7 @@
 from django.shortcuts import render
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from django.http import HttpResponse
 from rest_framework.permissions import IsAuthenticated
 from .models import Utilisateur, Role
 from .serializers import UtilisateurSerializer
@@ -14,9 +15,20 @@ from rest_framework.exceptions import PermissionDenied
 from django.db.models import Count, Q
 from datetime import date
 from rest_framework.generics import ListAPIView
-
 from .models import Personne, FicheAnthropometrique, FicheDactyloscopique, Role
 from .serializers import PersonneSerializer, FicheAnthroSerializer, FicheDactyloSerializer
+import insightface
+from django.core.files.storage import default_storage
+import os
+import cv2
+import numpy as np
+from django.conf import settings
+from django.contrib.auth import authenticate
+import pandas as pd
+import io
+from xml.etree.ElementTree import Element, SubElement, tostring
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 
 class UsersListView(APIView):
     permission_classes = [IsAuthenticated]
@@ -214,3 +226,132 @@ class DashboardViewSet(viewsets.ViewSet):
             "par_age": fiches_par_age,
             "par_genre": fiches_par_genre,
         })
+
+class RecherchePhotoView(APIView):
+    def post(self, request):
+        photo_file = request.FILES.get('photo')
+        if not photo_file:
+            return Response({"error": "Aucune photo envoyée."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Sauvegarde temporaire de la photo
+        tmp_path = default_storage.save('tmp_search.jpg', photo_file)
+        tmp_full_path = os.path.join(settings.MEDIA_ROOT, tmp_path)
+
+        try:
+            # Chargement du modèle InsightFace
+            model = insightface.app.FaceAnalysis()
+            model.prepare(ctx_id=0, det_size=(640, 640))  # ctx_id=0 pour GPU, ctx_id=-1 pour CPU
+
+            # Lecture de la photo
+            img = cv2.imread(tmp_full_path)
+            faces = model.get(img)
+
+            if len(faces) == 0:
+                return Response({"results": [], "message": "Aucun visage détecté."})
+
+            target_embedding = faces[0].embedding  # vecteur du visage
+
+            # Comparaison avec toutes les photos des personnes dans la DB
+            results = []
+            personnes = Personne.objects.all()
+            for personne in personnes:
+                if not personne.photo:  # si pas de photo
+                    continue
+
+                photo_path = os.path.join(settings.MEDIA_ROOT, str(personne.photo))
+                db_img = cv2.imread(photo_path)
+                db_faces = model.get(db_img)
+                if len(db_faces) == 0:
+                    continue
+
+                db_embedding = db_faces[0].embedding
+                # Calcul de la distance cosinus
+                similarity = np.dot(target_embedding, db_embedding) / (
+                    np.linalg.norm(target_embedding) * np.linalg.norm(db_embedding)
+                )
+
+                if similarity > 0.6:  # seuil d'identification (à ajuster)
+                    results.append({
+                        "id": personne.id,
+                        "nom": personne.nom,
+                        "prenom": personne.prenom,
+                        "similarity": float(similarity),
+                        "photo": request.build_absolute_uri(personne.photo.url)
+                    })
+
+            # Tri par similarité décroissante
+            results.sort(key=lambda x: x["similarity"], reverse=True)
+
+            return Response({"results": results})
+        finally:
+            # Supprimer la photo temporaire
+            if default_storage.exists(tmp_path):
+                default_storage.delete(tmp_path)
+
+
+#export des données 
+class ExportDataView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, format=None):
+        username = request.data.get('username')
+        password = request.data.get('password')
+        format_type = request.data.get('format')
+        fiche_id = request.data.get('id')  # ✅ récupère l'ID s'il existe
+
+        # Vérification des identifiants
+        user = authenticate(username=username, password=password)
+        if user is None:
+            return Response({'error': 'Identifiants invalides'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        # Si un ID est fourni → exporter une seule fiche
+        if fiche_id:
+            personnes = Personne.objects.filter(id=fiche_id).values()
+            if not personnes.exists():
+                return Response({'error': 'Fiche introuvable'}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            personnes = Personne.objects.all().values()
+
+        # --- EXPORT EXCEL ---
+        if format_type == 'excel':
+            df = pd.DataFrame(list(personnes))
+            buffer = io.BytesIO()
+            df.to_excel(buffer, index=False)
+            buffer.seek(0)
+            response = HttpResponse(buffer, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            response['Content-Disposition'] = 'attachment; filename="export.xlsx"'
+            return response
+
+        # --- EXPORT XML ---
+        elif format_type == 'xml':
+            root = Element('Personnes')
+            for p in personnes:
+                person_el = SubElement(root, 'Personne')
+                for key, val in p.items():
+                    SubElement(person_el, key).text = str(val)
+            xml_data = tostring(root, encoding='utf-8')
+            response = HttpResponse(xml_data, content_type='application/xml')
+            response['Content-Disposition'] = 'attachment; filename="export.xml"'
+            return response
+
+        # --- EXPORT PDF ---
+        elif format_type == 'pdf':
+            buffer = io.BytesIO()
+            pdf = canvas.Canvas(buffer, pagesize=A4)
+            pdf.setFont("Helvetica", 10)
+            y = 800
+            for p in personnes:
+                text = ", ".join(f"{k}: {v}" for k, v in p.items())
+                pdf.drawString(50, y, text)
+                y -= 20
+                if y < 50:
+                    pdf.showPage()
+                    y = 800
+            pdf.save()
+            buffer.seek(0)
+            response = HttpResponse(buffer, content_type='application/pdf')
+            response['Content-Disposition'] = 'attachment; filename="export.pdf"'
+            return response
+
+        else:
+            return Response({'error': 'Format invalide'}, status=status.HTTP_400_BAD_REQUEST)

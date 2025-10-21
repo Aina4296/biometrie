@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import Utilisateur, Role
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import Personne, FicheAnthropometrique, FicheDactyloscopique
+from datetime import date
 
 # serializers.py
 class RoleSerializer(serializers.ModelSerializer):
@@ -45,6 +46,7 @@ class FicheDactyloSerializer(serializers.ModelSerializer):
 class PersonneSerializer(serializers.ModelSerializer):
     anthropometrique = FicheAnthroSerializer(read_only=True)
     dactyloscopique = FicheDactyloSerializer(read_only=True)
+    age = serializers.SerializerMethodField()
 
     class Meta:
         model = Personne
@@ -53,6 +55,14 @@ class PersonneSerializer(serializers.ModelSerializer):
             'nationalite', 'domicile', 'filiation_pere', 'filiation_mere', 'nom_epouse',
             'profession', 'photo_face', 'photo_profil', 'photo_longue',
             'date_creation', 'date_modification',
-            'anthropometrique', 'dactyloscopique',
+            'anthropometrique', 'dactyloscopique','age',
         ]
         read_only_fields = ('date_creation','date_modification',)
+    def get_age(self, obj):
+        if obj.date_naissance:
+            today = date.today()
+            age = today.year - obj.date_naissance.year
+            if (today.month, today.day) < (obj.date_naissance.month, obj.date_naissance.day):
+                age -= 1
+            return age
+        return None
