@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import Utilisateur, Role
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import Personne, FicheAnthropometrique, FicheDactyloscopique
+from .models import Personne, FicheAnthropometrique, FicheDactyloscopique, Activite
 from datetime import date
 
 # serializers.py
@@ -66,3 +66,10 @@ class PersonneSerializer(serializers.ModelSerializer):
                 age -= 1
             return age
         return None
+
+class ActiviteSerializer(serializers.ModelSerializer):
+    utilisateur = serializers.CharField(source='utilisateur.username')
+
+    class Meta:
+        model = Activite
+        fields = ['id', 'utilisateur', 'action', 'description', 'date_heure']

@@ -15,8 +15,8 @@ from rest_framework.exceptions import PermissionDenied
 from django.db.models import Count, Q
 from datetime import date
 from rest_framework.generics import ListAPIView
-from .models import Personne, FicheAnthropometrique, FicheDactyloscopique, Role
-from .serializers import PersonneSerializer, FicheAnthroSerializer, FicheDactyloSerializer
+from .models import Personne, FicheAnthropometrique, FicheDactyloscopique, Role, Activite
+from .serializers import PersonneSerializer, FicheAnthroSerializer, FicheDactyloSerializer, ActiviteSerializer
 import insightface
 from django.core.files.storage import default_storage
 import os
@@ -29,6 +29,8 @@ import io
 from xml.etree.ElementTree import Element, SubElement, tostring
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from rest_framework_simplejwt.views import TokenObtainPairView
+
 
 class UsersListView(APIView):
     permission_classes = [IsAuthenticated]
@@ -231,63 +233,82 @@ class RecherchePhotoView(APIView):
     def post(self, request):
         photo_file = request.FILES.get('photo')
         if not photo_file:
-            return Response({"error": "Aucune photo envoyée."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Aucune photo envoyée."}, status=400)
 
-        # Sauvegarde temporaire de la photo
         tmp_path = default_storage.save('tmp_search.jpg', photo_file)
         tmp_full_path = os.path.join(settings.MEDIA_ROOT, tmp_path)
 
         try:
-            # Chargement du modèle InsightFace
-            model = insightface.app.FaceAnalysis()
-            model.prepare(ctx_id=0, det_size=(640, 640))  # ctx_id=0 pour GPU, ctx_id=-1 pour CPU
+            model = insightface.app.FaceAnalysis(providers=['CPUExecutionProvider'])
+            model.prepare(ctx_id=-1, det_size=(640, 640))
 
-            # Lecture de la photo
             img = cv2.imread(tmp_full_path)
-            faces = model.get(img)
+            if img is None:
+                return Response({"error": "Impossible de lire la photo envoyée."}, status=400)
 
+            faces = model.get(img)
+            print("👤 Visages détectés dans la photo envoyée :", len(faces))
             if len(faces) == 0:
                 return Response({"results": [], "message": "Aucun visage détecté."})
 
-            target_embedding = faces[0].embedding  # vecteur du visage
-
-            # Comparaison avec toutes les photos des personnes dans la DB
+            target_embedding = faces[0].embedding
             results = []
-            personnes = Personne.objects.all()
-            for personne in personnes:
-                if not personne.photo:  # si pas de photo
-                    continue
 
-                photo_path = os.path.join(settings.MEDIA_ROOT, str(personne.photo))
-                db_img = cv2.imread(photo_path)
-                db_faces = model.get(db_img)
-                if len(db_faces) == 0:
-                    continue
+            base_dir = os.path.join(settings.BASE_DIR, "backend", "photos")
 
-                db_embedding = db_faces[0].embedding
-                # Calcul de la distance cosinus
-                similarity = np.dot(target_embedding, db_embedding) / (
-                    np.linalg.norm(target_embedding) * np.linalg.norm(db_embedding)
-                )
+            for personne in Personne.objects.all():
+                photos_potentielles = [
+                    personne.photo_profil,
+                    personne.photo_face,
+                    personne.photo_longue
+                ]
 
-                if similarity > 0.6:  # seuil d'identification (à ajuster)
-                    results.append({
-                        "id": personne.id,
-                        "nom": personne.nom,
-                        "prenom": personne.prenom,
-                        "similarity": float(similarity),
-                        "photo": request.build_absolute_uri(personne.photo.url)
-                    })
+                for p in photos_potentielles:
+                    if not p:
+                        continue
 
-            # Tri par similarité décroissante
+                    photo_path = os.path.join(settings.BASE_DIR, 'photos', os.path.basename(str(p)))
+
+                    print("🔍 Test photo:", photo_path)
+
+                    if not os.path.exists(photo_path):
+                        continue
+
+                    db_img = cv2.imread(photo_path)
+                    if db_img is None:
+                        continue
+
+                    db_faces = model.get(db_img)
+                    print(f"📸 {photo_path} → {len(db_faces)} visage(s) détecté(s)")
+                    if len(db_faces) == 0:
+                        continue
+
+                    db_embedding = db_faces[0].embedding
+                    similarity = np.dot(target_embedding, db_embedding) / (
+                        np.linalg.norm(target_embedding) * np.linalg.norm(db_embedding)
+                    )
+
+                    print(f"📏 Similarité avec {personne.nom} {personne.prenom}: {similarity:.2f}")
+
+                    if similarity > 0.6:  # seuil
+                        results.append({
+                            "id": personne.id,
+                            "nom": personne.nom,
+                            "prenom": personne.prenom,
+                            "similarity": float(similarity),
+                            "photo": request.build_absolute_uri(p.url)
+                        })
+                        break  # on passe à la personne suivante dès qu’une correspondance est trouvée
+
             results.sort(key=lambda x: x["similarity"], reverse=True)
-
             return Response({"results": results})
+
+        except Exception as e:
+            print("Erreur pendant la recherche photo :", e)
+            return Response({"error": str(e)}, status=500)
         finally:
-            # Supprimer la photo temporaire
             if default_storage.exists(tmp_path):
                 default_storage.delete(tmp_path)
-
 
 #export des données 
 class ExportDataView(APIView):
@@ -355,3 +376,28 @@ class ExportDataView(APIView):
 
         else:
             return Response({'error': 'Format invalide'}, status=status.HTTP_400_BAD_REQUEST)
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    """
+    Personnalisation du login JWT pour enregistrer une activité.
+    """
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200:
+            username = request.data.get("username")
+            from django.contrib.auth.models import User
+            try:
+                user = Utilisateur.objects.get(username=username)
+                Activite.objects.create(
+                    utilisateur=user,
+                    action="connexion",
+                    description=f"{user.username} s'est connecté."
+                )
+            except Utilisateur.DoesNotExist:
+                pass
+        return response
+
+class ActiviteListView(generics.ListAPIView):
+    queryset = Activite.objects.all()
+    serializer_class = ActiviteSerializer
+    permission_classes = [permissions.IsAdminUser]

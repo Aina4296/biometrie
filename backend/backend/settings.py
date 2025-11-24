@@ -146,4 +146,4 @@ REST_FRAMEWORK = {
 AUTH_USER_MODEL = 'bio.Utilisateur'
 
 MEDIA_URL = '/photos/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'photos')
+MEDIA_ROOT = os.path.join(BASE_DIR, 'backend','photos')
